@@ -5,7 +5,6 @@ from langchain_community.utilities.sql_database import SQLDatabase
 from langchain_community.agent_toolkits import SQLDatabaseToolkit
 from langchain_groq import ChatGroq
 from langchain_community.agent_toolkits import create_sql_agent
-from langchain.agents.agent_types import AgentType
 from langchain_community.callbacks.streamlit import StreamlitCallbackHandler
 
 # Load environment variables (fallback if not in st.secrets)
@@ -57,7 +56,7 @@ def setup_db_and_agent(db_uri, groq_key):
             llm=llm,
             toolkit=toolkit,
             verbose=True,
-            agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+            agent_type="zero-shot-react-description",
             handle_parsing_errors=True
         )
         return agent_executor, db
