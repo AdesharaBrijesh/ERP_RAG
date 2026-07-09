@@ -13,8 +13,8 @@ from langchain_groq import ChatGroq
 load_dotenv()
 
 # Setup page config
-st.set_page_config(page_title="Text-to-SQL Chatbot", page_icon="💬", layout="wide")
-st.title("💬 Text-to-SQL Chatbot")
+st.set_page_config(page_title="Tassos ERP Chatbot Demo", page_icon="💬", layout="wide")
+st.title("💬 Tassos ERP Chatbot Demo")
 st.markdown("Ask questions in plain English, and the agent will translate them to SQL, execute them against your PostgreSQL database, and return a conversational answer!")
 
 # --- Credential Management ---
@@ -86,7 +86,8 @@ def setup_db_and_chain(db_uri, groq_key, llm_model_name):
         # 3. Final Answer Prompt
         answer_prompt = PromptTemplate.from_template(
             "Given the following chat history, user question, corresponding SQL query, and SQL result, answer the user question naturally.\n"
-            "If the SQL Query is 'NOT_SQL', just respond conversationally to the user.\n\n"
+            "If the SQL Query is 'NOT_SQL', just respond conversationally to the user.\n"
+            "CRITICAL: If the SQL Result is empty, an error, or if the question asks for data not present in the tables (like revenue or payments when no such tables exist), politely inform the user that you don't have that information. Do not hallucinate numbers.\n\n"
             "Chat History:\n{chat_history}\n\n"
             "Question: {question}\nSQL Query: {query}\nSQL Result: {result}\nAnswer: "
         )
