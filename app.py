@@ -40,8 +40,11 @@ if not db_url:
 @st.cache_resource(show_spinner="Connecting to Database and Initializing Agent...")
 def setup_db_and_agent(db_uri, groq_key):
     try:
+        # psycopg2 does not support the 'pgbouncer' query parameter often included in Supabase URLs
+        clean_db_uri = db_uri.replace("?pgbouncer=true&", "?").replace("?pgbouncer=true", "").replace("&pgbouncer=true", "")
+        
         # Setup Database Connection
-        db = SQLDatabase.from_uri(db_uri)
+        db = SQLDatabase.from_uri(clean_db_uri)
         
         # Initialize ChatGroq LLM
         llm = ChatGroq(
