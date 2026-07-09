@@ -62,10 +62,11 @@ def setup_db_and_chain(db_uri, groq_key, llm_model_name):
         
         # 1. SQL Generation Prompt
         sql_prompt = PromptTemplate.from_template(
-            "You are a PostgreSQL expert. Given an input question, create a syntactically correct PostgreSQL query to run.\n\n"
+            "You are a PostgreSQL expert. Given an input question and the chat history, create a syntactically correct PostgreSQL query to run.\n\n"
             "Here is the database schema:\n{table_info}\n\n"
+            "Chat History:\n{chat_history}\n\n"
             "Question: {question}\n\n"
-            "Return ONLY the raw SQL query. Do not wrap it in markdown formatting (like ```sql). Do not include any explanations."
+            "CRITICAL: Return ONLY ONE raw SQL query. Do not return multiple queries separated by semicolons. Do not wrap it in markdown formatting (like ```sql). Do not include any explanations."
         )
         
         # 2. Write Query Chain
@@ -81,7 +82,8 @@ def setup_db_and_chain(db_uri, groq_key, llm_model_name):
         
         # 3. Final Answer Prompt
         answer_prompt = PromptTemplate.from_template(
-            "Given the following user question, corresponding SQL query, and SQL result, answer the user question naturally.\n\n"
+            "Given the following chat history, user question, corresponding SQL query, and SQL result, answer the user question naturally.\n\n"
+            "Chat History:\n{chat_history}\n\n"
             "Question: {question}\nSQL Query: {query}\nSQL Result: {result}\nAnswer: "
         )
         
@@ -128,7 +130,13 @@ if prompt := st.chat_input("Ask a question about your database..."):
     with st.chat_message("assistant"):
         try:
             with st.spinner("Executing direct SQL query..."):
-                output = chain.invoke({"question": prompt})
+                # Format chat history (excluding the current prompt)
+                history_str = "\n".join([f"{msg['role']}: {msg['content']}" for msg in st.session_state.messages[:-1]])
+                
+                output = chain.invoke({
+                    "question": prompt,
+                    "chat_history": history_str
+                })
             
             st.markdown(output)
             st.session_state.messages.append({"role": "assistant", "content": output})
