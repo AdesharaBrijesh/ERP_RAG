@@ -108,10 +108,10 @@ write_query, execute_query, answer_chain, db = setup_db_and_chain(db_url, api_ke
 # --- State Management ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
-    # Test database connection and send a welcome message with available tables
+    # Test database connection silently and send a clean welcome message
     try:
-        tables = db.get_usable_table_names()
-        welcome_msg = f"Hello! I am connected to your PostgreSQL database. (Available Tables: {', '.join(tables) if tables else 'None found'}). How can I help you today?"
+        db.get_usable_table_names()
+        welcome_msg = "Hello! I am your Tassos ERP Assistant. How can I help you manage your business today?"
         st.session_state.messages.append({"role": "assistant", "content": welcome_msg})
     except Exception as e:
         st.error(f"Database connection error: {e}")
