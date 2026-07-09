@@ -1,11 +1,14 @@
 import os
 import streamlit as st
 from dotenv import load_dotenv
+from operator import itemgetter
 from langchain_community.utilities.sql_database import SQLDatabase
-from langchain_community.agent_toolkits import SQLDatabaseToolkit
+from langchain_community.tools.sql_database.tool import QuerySQLDataBaseTool
+from langchain.chains import create_sql_query_chain
+from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough
 from langchain_groq import ChatGroq
-from langchain_community.agent_toolkits import create_sql_agent
-from langchain_community.callbacks.streamlit import StreamlitCallbackHandler
 
 # Load environment variables (fallback if not in st.secrets)
 load_dotenv()
@@ -39,8 +42,8 @@ if not db_url:
     st.stop()
 
 # --- Database & LLM Setup ---
-@st.cache_resource(show_spinner="Connecting to Database and Initializing Agent...")
-def setup_db_and_agent(db_uri, groq_key, llm_model_name):
+@st.cache_resource(show_spinner="Connecting to Database and Initializing Chain...")
+def setup_db_and_chain(db_uri, groq_key, llm_model_name):
     try:
         # psycopg2 does not support the 'pgbouncer' query parameter often included in Supabase URLs
         clean_db_uri = db_uri.replace("?pgbouncer=true&", "?").replace("?pgbouncer=true", "").replace("&pgbouncer=true", "")
@@ -55,21 +58,30 @@ def setup_db_and_agent(db_uri, groq_key, llm_model_name):
             temperature=0,
         )
         
-        # Create Toolkit and Agent
-        toolkit = SQLDatabaseToolkit(db=db, llm=llm)
-        agent_executor = create_sql_agent(
-            llm=llm,
-            toolkit=toolkit,
-            verbose=True,
-            agent_type="zero-shot-react-description",
-            handle_parsing_errors=True
+        # Build the LCEL Chain
+        execute_query = QuerySQLDataBaseTool(db=db)
+        write_query = create_sql_query_chain(llm, db)
+        
+        answer_prompt = PromptTemplate.from_template(
+            "Given the following user question, corresponding SQL query, and SQL result, answer the user question naturally.\n\n"
+            "Question: {question}\nSQL Query: {query}\nSQL Result: {result}\nAnswer: "
         )
-        return agent_executor, db
+        
+        chain = (
+            RunnablePassthrough.assign(query=write_query).assign(
+                result=itemgetter("query") | execute_query
+            )
+            | answer_prompt
+            | llm
+            | StrOutputParser()
+        )
+        
+        return chain, db
     except Exception as e:
-        st.error(f"Failed to connect to the database or initialize the agent: {e}")
+        st.error(f"Failed to connect to the database or initialize the chain: {e}")
         st.stop()
 
-agent_executor, db = setup_db_and_agent(db_url, api_key, model_name)
+chain, db = setup_db_and_chain(db_url, api_key, model_name)
 
 # --- State Management ---
 if "messages" not in st.session_state:
@@ -96,17 +108,10 @@ if prompt := st.chat_input("Ask a question about your database..."):
 
     # Process and display assistant response
     with st.chat_message("assistant"):
-        # Use StreamlitCallbackHandler to show the agent's internal thoughts and tool usage
-        st_callback = StreamlitCallbackHandler(st.container())
-        
         try:
-            with st.spinner("Translating to SQL and querying database..."):
-                response = agent_executor.invoke(
-                    {"input": prompt},
-                    {"callbacks": [st_callback]}
-                )
+            with st.spinner("Executing direct SQL query..."):
+                output = chain.invoke({"question": prompt})
             
-            output = response.get("output", "Sorry, I couldn't process that.")
             st.markdown(output)
             st.session_state.messages.append({"role": "assistant", "content": output})
             
