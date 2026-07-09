@@ -1,0 +1,7 @@
+streamlit
+langchain
+langchain-community
+langchain-groq
+SQLAlchemy
+psycopg2-binary
+python-dotenv
