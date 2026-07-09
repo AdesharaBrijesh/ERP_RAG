@@ -21,13 +21,15 @@ def get_credentials():
         # Try loading from Streamlit secrets first
         api_key = st.secrets.get("GROQ_API_KEY", os.environ.get("GROQ_API_KEY"))
         db_url = st.secrets.get("DATABASE_URL", os.environ.get("DATABASE_URL"))
+        model_name = st.secrets.get("GROQ_MODEL_NAME", os.environ.get("GROQ_MODEL_NAME", "llama-3.3-70b-versatile"))
     except Exception:
         # Fallback to os.environ if st.secrets is not available
         api_key = os.environ.get("GROQ_API_KEY")
         db_url = os.environ.get("DATABASE_URL")
-    return api_key, db_url
+        model_name = os.environ.get("GROQ_MODEL_NAME", "llama-3.3-70b-versatile")
+    return api_key, db_url, model_name
 
-api_key, db_url = get_credentials()
+api_key, db_url, model_name = get_credentials()
 
 if not api_key:
     st.error("GROQ_API_KEY is not set. Please set it in Streamlit secrets or environment variables.")
@@ -38,7 +40,7 @@ if not db_url:
 
 # --- Database & LLM Setup ---
 @st.cache_resource(show_spinner="Connecting to Database and Initializing Agent...")
-def setup_db_and_agent(db_uri, groq_key):
+def setup_db_and_agent(db_uri, groq_key, llm_model_name):
     try:
         # psycopg2 does not support the 'pgbouncer' query parameter often included in Supabase URLs
         clean_db_uri = db_uri.replace("?pgbouncer=true&", "?").replace("?pgbouncer=true", "").replace("&pgbouncer=true", "")
@@ -49,7 +51,7 @@ def setup_db_and_agent(db_uri, groq_key):
         # Initialize ChatGroq LLM
         llm = ChatGroq(
             groq_api_key=groq_key,
-            model_name="llama3-70b-8192",  # Using the requested 70b model
+            model_name=llm_model_name,
             temperature=0,
         )
         
@@ -67,7 +69,7 @@ def setup_db_and_agent(db_uri, groq_key):
         st.error(f"Failed to connect to the database or initialize the agent: {e}")
         st.stop()
 
-agent_executor, db = setup_db_and_agent(db_url, api_key)
+agent_executor, db = setup_db_and_agent(db_url, api_key, model_name)
 
 # --- State Management ---
 if "messages" not in st.session_state:
