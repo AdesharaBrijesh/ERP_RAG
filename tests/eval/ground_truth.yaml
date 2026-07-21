@@ -1,0 +1,118 @@
+# Ground truth for end-to-end verification.
+#
+# Every `expect` value below was obtained by running `reference_sql` directly
+# against erp_db by hand. The pipeline's answer is checked against these
+# numbers, so "the chatbot replied confidently" is never mistaken for "the
+# chatbot replied correctly".
+#
+# Run: python -m scripts.verify_answers
+#
+# `must_contain` are strings that have to appear in the conversational answer
+# (digit grouping is normalised before matching, so 7211636 matches
+# "7,211,636"). `must_not_contain` catches the formatter leaking implementation
+# detail to a non-technical reader.
+
+- id: gt_warehouse_count
+  question: how many storage locations do we have?
+  reference_sql: SELECT count(*) FROM warehouses WHERE is_deleted = false
+  expect: 8
+  must_contain: ["8"]
+
+- id: gt_employee_count
+  question: how many employees do we have in total?
+  reference_sql: SELECT count(*) FROM employees WHERE is_deleted = false
+  expect: 480
+  must_contain: ["480"]
+
+- id: gt_active_employees
+  question: how many active employees are there?
+  reference_sql: |
+    SELECT count(*) FROM employee_employment ee
+    JOIN entity_values st ON st.id = ee.employment_status_id
+    WHERE ee.is_deleted = false AND st.value_code = 'ACTIVE'
+  expect: 451
+  must_contain: ["451"]
+  note: >
+    Requires the entity_values lookup convention. A model that filters on a
+    literal status column instead will silently return the wrong number.
+
+- id: gt_stock_per_warehouse
+  question: how much stock do we have in each warehouse?
+  reference_sql: |
+    SELECT w.name AS warehouse, ROUND(SUM(s.current_qty), 2) AS total_qty
+    FROM item_stocks s JOIN warehouses w ON w.id = s.warehouse_id
+    WHERE s.is_deleted = false AND w.is_deleted = false
+    GROUP BY w.name ORDER BY total_qty DESC
+  expect_top_row: ["Raw Material Store - Sanand", 7211636.29]
+  expect_row_count: 8
+  must_contain: ["Raw Material Store"]
+
+- id: gt_top_customer
+  question: who are our top 5 customers by order value?
+  reference_sql: |
+    SELECT c.name AS customer, ROUND(SUM(so.total_amount), 2) AS total_value
+    FROM sales_orders so JOIN customers c ON c.id = so.customer_id
+    WHERE so.is_deleted = false
+    GROUP BY c.name ORDER BY total_value DESC LIMIT 5
+  expect_top_row: ["Amara Raja Distributors", 1474706336.08]
+  expect_row_count: 5
+  must_contain: ["Amara Raja"]
+
+- id: gt_raw_material_stock
+  question: how much raw material do we have in stock?
+  reference_sql: |
+    SELECT ROUND(SUM(s.current_qty), 2) AS raw_material_qty
+    FROM item_stocks s
+    JOIN items i ON i.id = s.item_id
+    JOIN entity_values ev ON ev.id = i.item_type_id
+    JOIN entity_types et ON et.id = ev.entity_type_id AND et.code = 'ITEM_TYPE'
+    WHERE s.is_deleted = false AND i.is_deleted = false AND ev.value_code = 'RAW'
+  expect: 7310451.83
+  note: >
+    "Raw material" only exists as entity_values.value_code = 'RAW'. There is no
+    raw_materials table, so this is the clearest test of the lookup convention.
+
+- id: gt_qc_failures
+  question: how many production batches failed quality checks?
+  reference_sql: |
+    SELECT count(*) FROM production_batch_qc qc
+    JOIN entity_values ev ON ev.id = qc.status_id
+    WHERE qc.is_deleted = false AND ev.value_code = 'FAILED'
+  expect: 835
+  must_contain: ["835"]
+
+- id: gt_payroll_latest
+  question: how much did we pay out in salaries in the most recent payroll?
+  reference_sql: |
+    SELECT ROUND(SUM(pr.net_pay), 2) AS total_net_pay
+    FROM payroll_runs pr JOIN pay_periods pp ON pp.id = pr.pay_period_id
+    WHERE pr.is_deleted = false
+      AND pp.id = (SELECT max(id) FROM pay_periods)
+  expect: 15910156.12
+
+- id: gt_items_below_reorder
+  question: which items are below their reorder level?
+  reference_sql: |
+    SELECT count(*) FROM (
+      SELECT i.id FROM item_thresholds t
+      JOIN items i ON i.id = t.item_id
+      JOIN item_stocks s ON s.item_id = i.id AND s.is_deleted = false
+      WHERE t.is_deleted = false AND i.is_deleted = false
+      GROUP BY i.id, t.lower_limit HAVING SUM(s.current_qty) < t.lower_limit
+    ) x
+  expect: 0
+  note: >
+    Genuinely zero. The answer must say nothing is below reorder level, not
+    invent items. This is the anti-hallucination case.
+
+# --- must route to a clarifying question, not a guess -------------------
+
+- id: gt_no_invoices
+  question: how many invoices are still unpaid?
+  expect_clarification: true
+  note: no invoices or payments table exists in this ERP
+
+- id: gt_profit
+  question: what is our profit margin this quarter?
+  expect_clarification: true
+  note: no general ledger or costing tables exist
