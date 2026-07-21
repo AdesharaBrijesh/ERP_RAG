@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import time
 import uuid
 from decimal import Decimal
 from pathlib import Path
@@ -141,6 +142,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--show-sql", action="store_true")
     parser.add_argument("--only", help="run a single case by id")
+    parser.add_argument(
+        "--delay",
+        type=float,
+        default=0.0,
+        help=(
+            "seconds to pause between questions. Each question costs ~3k tokens "
+            "and Groq's free tier caps tokens-per-minute, so a full run needs "
+            "roughly 20s of pacing to avoid being throttled."
+        ),
+    )
     args = parser.parse_args()
 
     configure_logging("WARNING")
@@ -160,9 +171,18 @@ def main() -> None:
     total_tokens = 0
     latencies: list[int] = []
 
-    for case in cases:
+    for index, case in enumerate(cases):
+        if index and args.delay:
+            time.sleep(args.delay)
+
         session_id = f"verify_{uuid.uuid4().hex[:10]}"
         outcome = pipeline.handle(session_id, case["question"])
+        if outcome.path == "llm_error":
+            # A throttled call is not a wrong answer; wait out the window and
+            # give the question one more go before recording a failure.
+            print(f"{DIM}   throttled on {case['id']}, retrying in 60s{RESET}")
+            time.sleep(60)
+            outcome = pipeline.handle(session_id, case["question"])
         total_cost += outcome.tokens.cost_inr
         total_tokens += outcome.tokens.input + outcome.tokens.output
         latencies.append(outcome.latency_ms)

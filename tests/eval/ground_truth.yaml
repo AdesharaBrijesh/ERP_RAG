@@ -117,6 +117,201 @@
     below their reorder level" is a correct answer that never states the
     number 0 - so it is checked for the absence of invented rows instead.
 
+# --- procurement ---------------------------------------------------------
+
+- id: gt_po_count
+  question: how many purchase orders have we raised?
+  reference_sql: SELECT count(*) FROM purchase_orders WHERE is_deleted = false
+  expect: 1260
+  must_contain: ["1260"]
+
+- id: gt_po_value
+  question: what is the total value of all our purchase orders?
+  reference_sql: |
+    SELECT ROUND(SUM(poi.requested_qty * poi.price_per_uom), 2) AS total_value
+    FROM purchase_order_items poi
+    JOIN purchase_orders po ON po.id = poi.po_id
+    WHERE poi.is_deleted = false AND po.is_deleted = false
+  expect: 13756826681.58
+  note: value lives on the line items, not on the order header
+
+- id: gt_top_vendor
+  question: which supplier do we order from most often?
+  reference_sql: |
+    SELECT v.name, count(*) AS orders
+    FROM purchase_orders po JOIN vendors v ON v.id = po.vendor_id
+    WHERE po.is_deleted = false AND v.is_deleted = false
+    GROUP BY v.name ORDER BY orders DESC LIMIT 1
+  expect_top_row: ["Precision Foils India", 71]
+  must_contain: ["Precision Foils"]
+
+- id: gt_vendor_count
+  question: how many suppliers do we work with?
+  reference_sql: SELECT count(*) FROM vendors WHERE is_deleted = false
+  expect: 24
+  must_contain: ["24"]
+
+- id: gt_grn_received
+  question: what total quantity have we received from suppliers?
+  reference_sql: SELECT ROUND(SUM(received_qty), 2) FROM grn_items WHERE is_deleted = false
+  expect: 80177370.19
+
+# --- production ----------------------------------------------------------
+
+- id: gt_batch_count
+  question: how many production runs have we done?
+  reference_sql: SELECT count(*) FROM production_batches WHERE is_deleted = false
+  expect: 70368
+
+- id: gt_produced_total
+  question: how much have we produced in total?
+  reference_sql: |
+    SELECT ROUND(SUM(produced_qty), 2) FROM production_batch_outputs
+    WHERE is_deleted = false
+  expect: 54054859.70
+
+- id: gt_machine_count
+  question: how many machines are on the shop floor?
+  reference_sql: SELECT count(*) FROM machines WHERE is_deleted = false
+  expect: 69
+  must_contain: ["69"]
+
+- id: gt_work_center_count
+  question: how many production lines do we run?
+  reference_sql: SELECT count(*) FROM work_centers WHERE is_deleted = false
+  expect: 11
+  must_contain: ["11"]
+
+- id: gt_bom_count
+  question: how many product recipes do we have?
+  reference_sql: SELECT count(*) FROM boms WHERE is_deleted = false
+  expect: 34
+  must_contain: ["34"]
+
+- id: gt_qc_pass_rate
+  question: what percentage of our quality checks pass?
+  reference_sql: |
+    SELECT ROUND(100.0 * count(*) FILTER (WHERE ev.value_code = 'PASSED')
+                 / count(*), 2) AS pass_rate
+    FROM production_batch_qc qc JOIN entity_values ev ON ev.id = qc.status_id
+    WHERE qc.is_deleted = false
+  expect: 95.54
+
+# --- HR ------------------------------------------------------------------
+
+- id: gt_dept_count
+  question: how many teams are there in the company?
+  reference_sql: SELECT count(*) FROM departments WHERE is_deleted = 0
+  expect: 14
+  must_contain: ["14"]
+  note: >
+    departments.is_deleted is smallint, not boolean. `is_deleted = false`
+    raises "operator does not exist: smallint = boolean".
+
+- id: gt_designation_count
+  question: how many different job titles do we have?
+  reference_sql: SELECT count(*) FROM designations WHERE is_deleted = 0
+  expect: 16
+  must_contain: ["16"]
+  note: also smallint is_deleted
+
+- id: gt_leave_count
+  question: how many leave applications have been submitted?
+  reference_sql: SELECT count(*) FROM leave_entries WHERE is_deleted = false
+  expect: 3453
+
+- id: gt_paid_leave
+  question: how many of the leave applications were paid leave?
+  reference_sql: |
+    SELECT count(*) FROM leave_entries
+    WHERE is_deleted = false AND is_paid_leave = true
+  expect: 3093
+
+- id: gt_attendance_30d
+  question: how many attendance records are there for the last 30 days?
+  reference_sql: |
+    SELECT count(*) FROM attendance_records
+    WHERE is_deleted = false
+      AND attendance_date >= CURRENT_DATE - INTERVAL '30 days'
+  expect: 11014
+
+# --- sales ---------------------------------------------------------------
+
+- id: gt_quotation_count
+  question: how many quotations have we sent to customers?
+  reference_sql: SELECT count(*) FROM quotations WHERE is_deleted = false
+  expect: 2549
+
+- id: gt_so_total_value
+  question: what is the total value of all our sales orders?
+  reference_sql: SELECT ROUND(SUM(total_amount), 2) FROM sales_orders WHERE is_deleted = false
+  expect: 29684530548.58
+
+- id: gt_avg_order_value
+  question: what is our average order value?
+  reference_sql: SELECT ROUND(AVG(total_amount), 2) FROM sales_orders WHERE is_deleted = false
+  expect: 28083756.43
+
+- id: gt_customer_count
+  question: how many customers do we have?
+  reference_sql: SELECT count(*) FROM customers WHERE is_deleted = false
+  expect: 32
+  must_contain: ["32"]
+
+- id: gt_warranty_count
+  question: how many warranty claims have been registered?
+  reference_sql: |
+    SELECT count(*) FROM warranty_claim_registrations WHERE is_deleted = false
+  expect: 1600
+
+- id: gt_best_selling_item
+  question: which product sells the most by quantity?
+  reference_sql: |
+    SELECT i.name, ROUND(SUM(soi.quantity), 2) AS qty
+    FROM sales_order_items soi
+    JOIN items i ON i.id = soi.item_id
+    JOIN sales_orders so ON so.id = soi.sales_order_id
+    WHERE soi.is_deleted = false AND so.is_deleted = false AND i.is_deleted = false
+    GROUP BY i.name ORDER BY qty DESC LIMIT 1
+  expect_top_row: ["5kWh Home ESS", 17494.00]
+  must_contain: ["5kWh Home ESS"]
+
+# --- inventory -----------------------------------------------------------
+
+- id: gt_item_count
+  question: how many different products are in our catalogue?
+  reference_sql: SELECT count(*) FROM items WHERE is_deleted = false
+  expect: 89
+  must_contain: ["89"]
+
+- id: gt_stock_movements
+  question: how many stock movements have been recorded?
+  reference_sql: SELECT count(*) FROM stock_ledger
+  expect: 411859
+  note: >
+    stock_ledger has NO is_deleted column. Adding the usual soft-delete filter
+    raises "column is_deleted does not exist".
+
+- id: gt_top_stocked_item
+  question: which item do we hold the most of?
+  reference_sql: |
+    SELECT i.name, ROUND(SUM(s.current_qty), 2) AS qty
+    FROM item_stocks s JOIN items i ON i.id = s.item_id
+    WHERE s.is_deleted = false AND i.is_deleted = false
+    GROUP BY i.name ORDER BY qty DESC LIMIT 1
+  expect_top_row: ["Cathode Tab Aluminium", 1511713.96]
+  must_contain: ["Cathode Tab Aluminium"]
+
+- id: gt_serial_count
+  question: how many finished units have serial numbers?
+  reference_sql: SELECT count(*) FROM fg_serial_numbers WHERE is_deleted = false
+  expect: 188522
+
+- id: gt_bom_components
+  question: how many component lines are there across all our recipes?
+  reference_sql: SELECT count(*) FROM bom_components WHERE is_deleted = false
+  expect: 149
+
 # --- must route to a clarifying question, not a guess -------------------
 
 - id: gt_no_invoices

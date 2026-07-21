@@ -27,7 +27,11 @@ class GroqProvider(LLMProvider):
                 "to run the pipeline without a live model."
             )
         self.model_id = model_id
-        self._client = Groq(api_key=api_key, timeout=timeout, max_retries=2)
+        # Groq's free tier has a tokens-per-minute ceiling that a ~3k-token
+        # routing prompt hits quickly under load. The SDK honours Retry-After
+        # on 429, so give it enough attempts to ride out a burst rather than
+        # surfacing a rate limit to the user as a model outage.
+        self._client = Groq(api_key=api_key, timeout=timeout, max_retries=5)
 
     def complete(
         self,
