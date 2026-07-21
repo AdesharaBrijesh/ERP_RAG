@@ -26,6 +26,29 @@ class ChatRequest(BaseModel):
     user_id: str | None = Field(
         default=None, max_length=128, description="Optional, for audit logging."
     )
+    company_id: str | None = Field(
+        default=None,
+        max_length=64,
+        description=(
+            "Scope every answer to one company. Enforced by row-level security "
+            "on the database, not by the model. Omit for group-wide totals. "
+            "Send the caller's own company id - never let an end user choose it."
+        ),
+    )
+
+    @field_validator("company_id")
+    @classmethod
+    def _check_company_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            return None
+        if not stripped.isdigit():
+            # It is interpolated into a Postgres setting and cast to bigint by
+            # the RLS predicate; anything non-numeric is a caller bug.
+            raise ValueError("company_id must be numeric")
+        return stripped
 
     @field_validator("message")
     @classmethod

@@ -110,7 +110,11 @@ class ChatPipeline:
         return self._sessions or get_session_store()
 
     def handle(
-        self, session_id: str, message: str, user_id: str | None = None
+        self,
+        session_id: str,
+        message: str,
+        user_id: str | None = None,
+        company_id: str | None = None,
     ) -> ChatOutcome:
         started = time.perf_counter()
         settings = get_settings()
@@ -140,6 +144,7 @@ class ChatPipeline:
             pending=pending,
             pending_intent=state.pending_intent,
             tokens=tokens,
+            company_id=company_id,
         )
 
         outcome.tables_retrieved = retrieval.table_names
@@ -163,6 +168,7 @@ class ChatPipeline:
                 "sql_ms": outcome.sql_ms,
                 "latency_ms": outcome.latency_ms,
                 "user_id": user_id,
+                "company_id": company_id,
             },
         )
         return outcome
@@ -176,6 +182,7 @@ class ChatPipeline:
         pending: str | None,
         pending_intent: str | None,
         tokens: TokenUsage,
+        company_id: str | None = None,
     ) -> ChatOutcome:
         try:
             decision = route(
@@ -238,7 +245,7 @@ class ChatPipeline:
 
         repaired = False
         try:
-            result: QueryResult = execute_query(guarded)
+            result: QueryResult = execute_query(guarded, company_id=company_id)
         except SqlExecutionError as exc:
             log.warning(
                 "sql execution failed",
@@ -252,6 +259,7 @@ class ChatPipeline:
                 error=str(exc),
                 decision=decision,
                 tokens=tokens,
+                company_id=company_id,
             )
             if isinstance(outcome, ChatOutcome):
                 return outcome
@@ -287,6 +295,7 @@ class ChatPipeline:
         error: str,
         decision,
         tokens: TokenUsage,
+        company_id: str | None = None,
     ) -> "ChatOutcome | tuple[object, QueryResult]":
         """One corrective LLM pass. Returns the retry's (guarded, result) on
         success, or a terminal ChatOutcome if the repair also fails."""
@@ -330,7 +339,7 @@ class ChatPipeline:
 
         try:
             guarded_retry = validate_sql(fixed.sql or "")
-            result = execute_query(guarded_retry)
+            result = execute_query(guarded_retry, company_id=company_id)
         except SqlGuardError as exc:
             log.warning("repaired SQL rejected by guard", extra={"guard_reason": exc.reason})
             return failure

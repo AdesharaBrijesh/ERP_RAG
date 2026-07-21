@@ -42,7 +42,10 @@ async def chat(
     set_session_id(session_id)
 
     outcome = get_pipeline().handle(
-        session_id=session_id, message=payload.message, user_id=payload.user_id
+        session_id=session_id,
+        message=payload.message,
+        user_id=payload.user_id,
+        company_id=payload.company_id,
     )
 
     return ChatResponse(

@@ -53,11 +53,17 @@ def _jsonable(value: Any) -> Any:
     return str(value)
 
 
-def execute_query(guarded: GuardedSql) -> QueryResult:
+def execute_query(guarded: GuardedSql, company_id: str | None = None) -> QueryResult:
     """Run a validated SELECT on the read-only connection.
 
     Only ever called with the output of ``validate_sql``; the type signature
     makes it awkward to call with an unvalidated string by accident.
+
+    ``company_id`` scopes the result to one company. It is applied by setting a
+    transaction-local GUC that row-level security policies read, NOT by asking
+    the model to add a WHERE clause and hoping it complies. If the policies
+    from ``scripts/enable_company_rls.py`` are installed, no query the model
+    can write will see another company's rows.
     """
     settings = get_settings()
     started = time.perf_counter()
@@ -67,6 +73,12 @@ def execute_query(guarded: GuardedSql) -> QueryResult:
             # Explicit read-only transaction, belt-and-braces with the engine
             # level setting, in case a pooler reset the session.
             conn.execute(text("SET TRANSACTION READ ONLY"))
+            # Transaction-local, so it cannot leak to the next request that
+            # borrows this pooled connection.
+            conn.execute(
+                text("SELECT set_config('app.company_id', :cid, true)"),
+                {"cid": str(company_id) if company_id else ""},
+            )
             cursor = conn.execute(text(guarded.sql))
             columns = list(cursor.keys())
             # Fetch one extra row to detect truncation without a second query.
