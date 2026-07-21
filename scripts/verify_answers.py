@@ -141,7 +141,9 @@ def check(case: dict, outcome, show_sql: bool) -> tuple[bool, list[str]]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--show-sql", action="store_true")
-    parser.add_argument("--only", help="run a single case by id")
+    parser.add_argument(
+        "--only", help="comma-separated case id(s) to run, e.g. gt_dept_count,gt_qc_pass_rate"
+    )
     parser.add_argument(
         "--delay",
         type=float,
@@ -158,9 +160,10 @@ def main() -> None:
     settings = get_settings()
     cases = yaml.safe_load(GT_PATH.read_text(encoding="utf-8"))
     if args.only:
-        cases = [c for c in cases if c["id"] == args.only]
-        if not cases:
-            raise SystemExit(f"no case with id {args.only!r}")
+        wanted = {i.strip() for i in args.only.split(",") if i.strip()}
+        cases = [c for c in cases if c["id"] in wanted]
+        if missing := wanted - {c["id"] for c in cases}:
+            raise SystemExit(f"no case with id(s): {', '.join(sorted(missing))}")
 
     pipeline = ChatPipeline()
     print(f"\n{' END-TO-END VERIFICATION ':=^78}")

@@ -17,7 +17,7 @@ from sqlalchemy import Engine
 
 from app.config import get_settings
 from app.core.logging import get_logger
-from app.db.introspect import TableInfo, introspect_schema
+from app.db.introspect import TableInfo, build_pruned_schema, introspect_schema
 from app.embeddings.base import EmbeddingProvider
 from app.embeddings.factory import get_embedding_provider
 from app.retrieval.descriptions import weighted_keywords_for
@@ -216,13 +216,10 @@ class TableRetriever:
         return is_detail_child or is_named_parent or already_relevant
 
     def _build_pruned_schema(self, selected: list[RetrievedTable]) -> str:
-        blocks: list[str] = []
-        for table in selected:
-            info = self._schema.get(table.name)
-            if info is None:
-                continue
-            blocks.append(info.to_ddl())
-        return "\n\n".join(blocks)
+        infos = [
+            self._schema[t.name] for t in selected if t.name in self._schema
+        ]
+        return build_pruned_schema(infos)
 
 
 _retriever: TableRetriever | None = None

@@ -26,8 +26,32 @@ _STOPWORDS = frozenset(
 )
 
 
+def singularise(word: str) -> str:
+    """Crude, deliberate stemming - plurals only.
+
+    Without it "suppliers" does not match the glossary's "supplier" and
+    `vendors` is never retrieved for "how many suppliers do we work with?".
+    Applied identically to documents and queries, so exactness matters less
+    than consistency: `address` -> `address` (guarded by the `ss` check),
+    `status` -> `status`, `stocks` -> `stock`, `companies` -> `company`.
+    """
+    if len(word) <= 3 or word.endswith("ss") or word.endswith("us"):
+        return word
+    if word.endswith("ies"):
+        return word[:-3] + "y"
+    if word.endswith(("ses", "xes", "zes", "ches", "shes")):
+        return word[:-2]
+    if word.endswith("s"):
+        return word[:-1]
+    return word
+
+
 def tokenize(text: str) -> list[str]:
-    return [w for w in _WORD_RE.findall(text.lower()) if w not in _STOPWORDS and len(w) > 1]
+    return [
+        singularise(w)
+        for w in _WORD_RE.findall(text.lower())
+        if w not in _STOPWORDS and len(w) > 1
+    ]
 
 
 @dataclass

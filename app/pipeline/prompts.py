@@ -52,9 +52,10 @@ CORE_CONVENTIONS = """DATABASE CONVENTIONS (this ERP, PostgreSQL) - follow these
 3. Prefer human-readable labels over internal codes: select a `name` column
    ("Raw Material Store - Sanand") rather than a `code` ("WH-RM-SAN").
 
-4. Table aliases must NEVER be a SQL reserved word. `is`, `as`, `in`, `on`,
-   `or`, `and`, `order`, `group`, `end`, `all` are syntax errors as aliases -
-   `FROM item_stocks is` will not parse. Use `ist`, `ev`, `so` and similar.
+4. USE THE ALIAS GIVEN. Each table below is labelled `(alias: xx)`. Use
+   exactly that alias. They are pre-checked to be legal and unique - inventing
+   your own risks a reserved word (`FROM item_stocks is` is a syntax error) or
+   a collision between two similarly named tables.
 
 5. AGGREGATES: with SUM/COUNT/AVG in the SELECT list, every non-aggregated
    column in SELECT *and in ORDER BY* must be in GROUP BY. To pick a latest
@@ -86,15 +87,28 @@ Value codes: "raw material" -> 'RAW', "finished goods" -> 'FINISHED',
 
 EMPLOYMENT_CONVENTION = """EMPLOYMENT STATE lives in `employee_employment`, never on `employees`, which is
 identity only. Department, designation, joining date and whether someone still
-works here are all in `employee_employment`, and `employment_status_id` points
-at entity_values (et.code = 'EMPLOYMENT_STATUS').
-"active employees" / "current staff" / "how many people work here" means:
-    FROM employee_employment ee
-    JOIN entity_values ev ON ev.id = ee.employment_status_id
-    JOIN entity_types et ON et.id = ev.entity_type_id
-                         AND et.code = 'EMPLOYMENT_STATUS'
-    WHERE ev.value_code = 'ACTIVE' AND ee.is_deleted = false
-Counting `employees` instead returns everyone ever hired, including leavers.
+works here are all in `employee_employment`, whose `employment_status_id`
+points at entity_values (et.code = 'EMPLOYMENT_STATUS').
+
+Which table to count depends on what was asked - read the question carefully:
+
+  "how many employees in total", "how many people do we employ", an
+  unqualified headcount -> count `employees` directly, with NO status join.
+  This includes leavers, and is the right answer to a "total" question.
+
+  "how many ACTIVE employees", "current staff", "who still works here",
+  "how many people work here now", anything filtered by department or
+  designation -> go through employee_employment:
+      FROM employee_employment ee
+      JOIN entity_values ev ON ev.id = ee.employment_status_id
+      JOIN entity_types et ON et.id = ev.entity_type_id
+                           AND et.code = 'EMPLOYMENT_STATUS'
+      WHERE ev.value_code = 'ACTIVE' AND ee.is_deleted = false
+
+Do not apply the ACTIVE filter to a question that asked for a total, and do
+not count `employees` for a question that asked about current staff - the two
+figures differ.
+
 Note `employee_employment.department_id` also points at entity_values, NOT at
 the `departments` table.
 """
@@ -106,14 +120,19 @@ Comparing a single `item_stocks` row against the limit wrongly flags items that
 are merely low in one warehouse while plenty remains elsewhere.
 """
 
-PAY_PERIOD_CONVENTION = """PAY PERIODS have ONE ROW PER COMPANY PER MONTH. "the most recent payroll" means
-the latest (period_year, period_month) across every company - NOT `max(id)` and
-NOT `ORDER BY end_date LIMIT 1`, both of which silently return one company's
-figure and halve the answer:
+PAY_PERIOD_CONVENTION = """PAY PERIODS have ONE ROW PER COMPANY PER MONTH, so the latest month is
+SEVERAL rows, not one. Any subquery that reduces pay_periods to a single row -
+`max(id)`, `ORDER BY ... LIMIT 1`, `IN (SELECT id ... LIMIT 1)` - picks one
+company and halves the answer. There is no LIMIT 1 that is correct here.
+
+"the most recent payroll" means every company's row for the latest month.
+Select the month first, then match ALL periods in it:
     WHERE (pp.period_year, pp.period_month) = (
         SELECT pp2.period_year, pp2.period_month FROM pay_periods pp2
         WHERE pp2.is_deleted = false
         ORDER BY pp2.period_year DESC, pp2.period_month DESC LIMIT 1)
+The LIMIT 1 there is picking a MONTH, not a period row - the outer comparison
+then matches every company's period in that month.
 """
 
 _EMPLOYMENT_TRIGGERS = frozenset(

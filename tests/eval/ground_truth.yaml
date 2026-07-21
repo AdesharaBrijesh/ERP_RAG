@@ -200,13 +200,24 @@
 # --- HR ------------------------------------------------------------------
 
 - id: gt_dept_count
-  question: how many teams are there in the company?
+  question: how many departments are there in the company?
   reference_sql: SELECT count(*) FROM departments WHERE is_deleted = 0
   expect: 14
   must_contain: ["14"]
   note: >
     departments.is_deleted is smallint, not boolean. `is_deleted = false`
     raises "operator does not exist: smallint = boolean".
+    Originally worded "how many teams", which the model correctly refused to
+    answer - see gt_amb_teams. The ambiguity was in the question, not the
+    model, so the two behaviours are now pinned separately.
+
+- id: gt_amb_teams
+  question: how many teams are there?
+  expect_clarification: true
+  note: >
+    "Teams" maps equally well to departments (14) and work_centers (11).
+    Answering either without asking would be a confident coin-flip, so a
+    clarifying question is the correct outcome here.
 
 - id: gt_designation_count
   question: how many different job titles do we have?

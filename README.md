@@ -24,11 +24,19 @@ Measured on this database:
 | | tokens |
 |---|---|
 | full schema, every question | ~9,100 |
-| pruned schema, worst case across the 36-question eval set | ~1,039 |
 | pruned schema, typical | ~700 |
+| whole routing prompt (schema + conventions + question), mean | ~2,100 |
 
 Retrieval accuracy on the eval set is **30/30** on questions with an expected
-table, with no question exceeding the 3,000-token budget.
+table. Measured cost is **~₹0.16–0.17 per question** against the ₹0.21–0.25
+target.
+
+A caution learned the hard way: the *static* part of the prompt is as much a
+cost centre as the schema. The domain-conventions block once reached 1,560
+tokens — 56% of the routing prompt, more than twice the pruned schema it
+exists to support — which quietly undid the pruning. Conventions are now
+assembled per query from the retrieved tables, and
+`tests/test_prompt_budget.py` fails if they ever outgrow the schema again.
 
 ---
 
@@ -170,7 +178,8 @@ Content-Type: application/json
 {
   "session_id": "abc-123",       // optional; server issues one on first call
   "message": "what is our stock looking like?",
-  "user_id": "u_42"              // optional, for audit logging
+  "user_id": "u_42",             // optional, for audit logging
+  "company_id": "1"              // optional; see Multi-company below
 }
 ```
 
@@ -201,6 +210,29 @@ that does not exist until the query returns, so token-by-token streaming would
 show a blank screen for most of the latency and then dump the answer anyway. If
 the UI wants a typing effect, animate it client side. Say the word if an SSE
 variant is needed.
+
+### Multi-company
+
+This database holds **more than one company**, and 21 tables carry
+`company_id`. Send the caller's own `company_id` and every answer is scoped to
+it; omit it and answers cover the whole group.
+
+Scoping is enforced by **Postgres row-level security**, not by asking the model
+to remember a `WHERE` clause. Install the policies once:
+
+```bash
+.venv/Scripts/python.exe -m scripts.enable_company_rls --dry-run   # preview
+.venv/Scripts/python.exe -m scripts.enable_company_rls --enable
+```
+
+The service sets a transaction-local `app.company_id` that the policies read.
+A query that explicitly asks for another company returns **zero rows**, not
+that company's data. Other database roles — including the ERP application's —
+are unaffected, and the table owner bypasses RLS entirely. Reversible with
+`--disable`.
+
+> Never let an end user choose `company_id`; pass the one the caller is
+> authenticated for.
 
 ### `GET /healthz`
 
@@ -268,19 +300,31 @@ it holds.
 ## Testing
 
 ```bash
-.venv/Scripts/python.exe -m pytest tests/ -q       # 104 tests, no LLM calls
-.venv/Scripts/python.exe -m scripts.run_eval       # retrieval accuracy report
-.venv/Scripts/python.exe -m scripts.run_eval --router   # + live LLM routing (costs money)
+.venv/Scripts/python.exe -m pytest tests/ -q         # 126 tests, no LLM calls
+.venv/Scripts/python.exe -m scripts.run_eval         # retrieval accuracy, free
+.venv/Scripts/python.exe -m scripts.verify_answers   # end-to-end correctness, costs tokens
 ```
 
 Tests run against the live `erp_db` with `LLM_PROVIDER=fake`, so the real
 retrieval, guard, execution and session paths are exercised without a paid API.
 
-The eval set ([`tests/eval/questions.yaml`](tests/eval/questions.yaml)) has 36
-questions across single-table, multi-table and deliberately ambiguous —
-including two whose data does not exist in this ERP (invoices, profit margin),
-which must produce a clarifying question rather than a confidently wrong join.
-**Add a case here whenever retrieval gets something wrong in the wild.**
+Two eval layers, and the second is the one that matters:
+
+- **[`tests/eval/questions.yaml`](tests/eval/questions.yaml)** — 36 questions
+  checking *which tables* retrieval picks. Free, no LLM. Currently 30/30.
+- **[`tests/eval/ground_truth.yaml`](tests/eval/ground_truth.yaml)** — 39
+  questions checking *whether the answer is right*, against reference SQL run
+  by hand. `scripts/verify_answers.py` runs the full pipeline, then
+  independently runs the reference query and compares the number, the row
+  count, the top row, and whether the answer leaked SQL vocabulary.
+
+Latest measured run: **33/38 correct, ₹0.1356/question, 2,576 tokens,
+p50 3.8s / p95 5.9s.**
+
+> Retrieval accuracy is not answer accuracy. Every serious bug found so far
+> passed retrieval and produced a *plausible wrong number* — 480 employees
+> instead of 451, one company's payroll instead of the group's. Only ground
+> truth catches those. **Add a case there whenever you see a wrong answer.**
 
 ---
 

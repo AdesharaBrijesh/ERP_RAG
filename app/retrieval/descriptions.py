@@ -520,9 +520,13 @@ def weighted_keywords_for(table: TableInfo) -> dict[str, float]:
     primary_blob = " ".join([table.name.replace("_", " "), " ".join(synonyms)]).lower()
     secondary_blob = " ".join([purpose, " ".join(key_columns(table))]).lower()
 
+    # Indexed in the same singular form the query tokenizer produces, so
+    # "suppliers" in a question matches "supplier" in the glossary.
+    from app.retrieval.lexical import singularise
+
     weights: dict[str, float] = {}
     for term in _WORD_RE.findall(secondary_blob):
-        weights[term] = SECONDARY_WEIGHT
+        weights[singularise(term)] = SECONDARY_WEIGHT
     for term in _WORD_RE.findall(primary_blob):
-        weights[term] = PRIMARY_WEIGHT
+        weights[singularise(term)] = PRIMARY_WEIGHT
     return weights

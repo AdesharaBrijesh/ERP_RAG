@@ -27,6 +27,20 @@ DEFAULT_EXCLUDED_TABLES = frozenset(
 # returns rows and one that silently returns none.
 _ENUMISH_SUFFIXES = ("status", "type", "state", "stage", "category", "mode", "kind")
 
+# Words that cannot be used as a bare table alias in Postgres. `is` is the one
+# that actually bit us: `FROM item_stocks is` is a syntax error, and it is the
+# alias a model naturally derives from the table name.
+RESERVED_WORDS = frozenset(
+    """all and any as asc at between both case cast check collate column constraint
+    create cross current_date current_time current_timestamp current_user default
+    deferrable desc distinct do else end except false for foreign from full grant
+    group having in initially inner intersect into is join leading left like limit
+    localtime localtimestamp natural not null offset on only or order outer overlaps
+    placing primary references returning right select session_user similar some
+    symmetric table then to trailing true union unique user using variadic verbose
+    when where window with""".split()
+)
+
 # Present on essentially every table in this ERP. Collapsed to one line in the
 # prompt; the soft-delete convention is stated once globally instead.
 AUDIT_COLUMNS = frozenset(
@@ -96,7 +110,7 @@ class TableInfo:
     def related_tables(self) -> set[str]:
         return {ref.split(".")[0] for _, ref in self.foreign_keys}
 
-    def to_ddl(self, max_columns: int = 40) -> str:
+    def to_ddl(self, max_columns: int = 40, alias: str | None = None) -> str:
         """Compact DDL for the LLM prompt. Not valid DDL - it is a token-cheap
         description that the model reads far more reliably than real DDL.
 
@@ -104,7 +118,7 @@ class TableInfo:
         carries the same seven, and spelling them out per table was costing
         ~40% of the pruned-schema budget for zero added signal.
         """
-        header = f"TABLE {self.name}"
+        header = f"TABLE {self.name} (alias: {alias or self.safe_alias()})"
         if self.comment:
             header += f"  -- {self.comment}"
         lines = [header]
@@ -119,6 +133,41 @@ class TableInfo:
             lines.append(f"  [audit cols: {', '.join(present_audit)}]")
         lines.append(f"  {self.soft_delete_hint()}")
         return "\n".join(lines)
+
+    def safe_alias(self, taken: frozenset[str] = frozenset()) -> str:
+        """A short alias that is neither a SQL reserved word nor already used.
+
+        Models reach for the obvious initials, and `item_stocks` -> `is` is a
+        syntax error that recurred in live testing even with an explicit
+        prompt rule against it. Handing over a concrete safe alias costs a few
+        tokens per table; letting the query fail costs a whole repair call.
+
+        ``taken`` matters because initials collide - `items` and
+        `item_thresholds` both reduce to `it`, and the reorder-level question
+        joins them.
+        """
+        words = [w for w in self.name.split("_") if w]
+        alias = "".join(w[0] for w in words) or self.name[:2]
+        tail = words[-1] if words else self.name
+
+        def unusable(candidate: str) -> bool:
+            return (
+                candidate.lower() in RESERVED_WORDS
+                or candidate.lower() in taken
+                or len(candidate) < 2
+            )
+
+        # Grow from the last word until the alias is both legal and unused.
+        for extra in range(1, len(tail)):
+            if not unusable(alias):
+                break
+            alias += tail[extra]
+
+        suffix = 2
+        while unusable(alias):
+            alias = f"{''.join(w[0] for w in words) or self.name[:2]}{suffix}"
+            suffix += 1
+        return alias.lower()
 
     def soft_delete_hint(self) -> str:
         """State the soft-delete filter for THIS table explicitly.
@@ -284,10 +333,36 @@ def _attach_lookup_codes(conn, schema: str, tables: list[TableInfo]) -> None:
             except Exception:  # noqa: BLE001 - best-effort enrichment
                 continue
             # Only useful when the column maps to exactly one lookup group.
-            if len(codes) == 1:
-                table.columns[idx] = ColumnInfo(
-                    **{**col.__dict__, "lookup_code": codes[0]}
-                )
+            if len(codes) != 1:
+                continue
+
+            # Also list the permitted value_codes. Without them the model
+            # guesses the spelling - it wrote 'PASS' where the data says
+            # 'PASSED', which returns 0 rows and no error.
+            try:
+                values = conn.execute(
+                    text(
+                        """
+                        SELECT ev.value_code
+                        FROM entity_values ev
+                        JOIN entity_types et ON et.id = ev.entity_type_id
+                        WHERE et.code = :code AND ev.is_deleted = false
+                        ORDER BY ev.sort_order, ev.id
+                        LIMIT 10
+                        """
+                    ),
+                    {"code": codes[0]},
+                ).scalars().all()
+            except Exception:  # noqa: BLE001
+                values = []
+
+            table.columns[idx] = ColumnInfo(
+                **{
+                    **col.__dict__,
+                    "lookup_code": codes[0],
+                    "sample_values": tuple(str(v) for v in values[:8]),
+                }
+            )
 
 
 def _attach_enum_samples(conn, schema: str, tables: list[TableInfo]) -> None:
@@ -322,5 +397,15 @@ def _attach_enum_samples(conn, schema: str, tables: list[TableInfo]) -> None:
 
 
 def build_pruned_schema(tables: list[TableInfo], max_columns: int = 40) -> str:
-    """The only schema text that ever reaches the LLM."""
-    return "\n\n".join(t.to_ddl(max_columns=max_columns) for t in tables)
+    """The only schema text that ever reaches the LLM.
+
+    Aliases are assigned across the whole selection so no two tables in the
+    same prompt are handed the same one.
+    """
+    blocks: list[str] = []
+    taken: set[str] = set()
+    for table in tables:
+        alias = table.safe_alias(frozenset(taken))
+        taken.add(alias)
+        blocks.append(table.to_ddl(max_columns=max_columns, alias=alias))
+    return "\n\n".join(blocks)
