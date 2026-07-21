@@ -1,0 +1,202 @@
+# Retrieval eval set.
+#
+# Questions are phrased the way a non-technical user actually asks them, never
+# using table names. `expect_any_of` is the minimum bar: at least one of these
+# tables must appear in the retrieved set. `expect_all_of` is used where a
+# correct answer genuinely requires a join and missing either table would make
+# the question unanswerable.
+#
+# Run: python -m scripts.run_eval
+
+- id: emp_count
+  question: how many employees do we have?
+  category: single_table
+  expect_any_of: [employees]
+
+- id: stock_now
+  question: what is our stock looking like?
+  category: single_table
+  expect_any_of: [item_stocks]
+
+- id: warehouse_status
+  question: what is the status of the warehouse?
+  category: single_table
+  expect_any_of: [warehouses, item_stocks]
+
+- id: list_warehouses
+  question: list all our storage locations
+  category: single_table
+  expect_any_of: [warehouses]
+
+- id: customers
+  question: show me our customers
+  category: single_table
+  expect_any_of: [customers]
+
+- id: vendors
+  question: who do we buy things from?
+  category: single_table
+  expect_any_of: [vendors]
+
+- id: machines
+  question: what equipment do we have on the shop floor?
+  category: single_table
+  expect_any_of: [machines, work_centers]
+
+- id: holidays
+  question: when is the next public holiday?
+  category: single_table
+  expect_any_of: [holidays]
+
+- id: departments
+  question: what teams are there in the company?
+  category: single_table
+  expect_any_of: [departments]
+
+- id: items
+  question: what products do we make?
+  category: single_table
+  expect_any_of: [items]
+
+- id: open_pos
+  question: show me pending purchase orders
+  category: single_table
+  expect_any_of: [purchase_orders]
+
+- id: absent
+  question: who was absent last week?
+  category: single_table
+  expect_any_of: [attendance_records]
+
+- id: on_leave
+  question: how many people are on leave this month?
+  category: single_table
+  expect_any_of: [leave_entries]
+
+- id: production_today
+  question: what did we produce last month?
+  category: single_table
+  expect_any_of: [production_batches, production_batch_outputs]
+
+- id: audit
+  question: who changed things in the system recently?
+  category: single_table
+  expect_any_of: [audit_logs]
+
+- id: quotations
+  question: what quotes have we sent out?
+  category: single_table
+  expect_any_of: [quotations]
+
+- id: warranty
+  question: any warranty claims from customers?
+  category: single_table
+  expect_any_of: [warranty_claim_registrations]
+
+- id: serials
+  question: can I trace a finished unit by its serial number?
+  category: single_table
+  expect_any_of: [fg_serial_numbers]
+
+# --- multi-table -----------------------------------------------------------
+
+- id: below_reorder
+  question: which items are running low and need reordering?
+  category: multi_table
+  expect_any_of: [item_stocks, item_thresholds]
+  expect_all_of: [item_stocks]
+
+- id: top_customers
+  question: list our top customers by order value
+  category: multi_table
+  expect_any_of: [customers, sales_order_items]
+  expect_all_of: [sales_orders]
+
+- id: stock_per_warehouse
+  question: how much material do we have in each warehouse?
+  category: multi_table
+  expect_all_of: [item_stocks]
+  expect_any_of: [warehouses, items]
+
+- id: bom_explosion
+  question: what goes into making our finished goods?
+  category: multi_table
+  expect_any_of: [boms, bom_components]
+
+- id: salary_by_dept
+  question: how much did we spend on salaries last month?
+  category: multi_table
+  expect_any_of: [payroll_runs, employee_salary_details]
+
+- id: vendor_for_item
+  question: which supplier gives us the best price for an item?
+  category: multi_table
+  expect_any_of: [vendor_items, mr_quotations]
+
+- id: attendance_by_dept
+  question: what is the attendance rate across teams?
+  category: multi_table
+  expect_any_of: [attendance_records]
+
+- id: grn_vs_po
+  question: what have we received against our orders this month?
+  category: multi_table
+  expect_any_of: [grn, grn_items, purchase_orders]
+
+- id: qc_failures
+  question: which production runs failed quality checks?
+  category: multi_table
+  expect_any_of: [production_batch_qc, production_batch_qc_items]
+  expect_all_of: [production_batches]
+
+- id: emp_warehouse
+  question: which staff are assigned to which storage location?
+  category: multi_table
+  expect_any_of: [employee_warehouses]
+
+- id: material_issued
+  question: how much material was issued to the shop floor?
+  category: multi_table
+  expect_any_of: [production_material_releases, production_material_release_items, stock_ledger]
+
+- id: raw_material_stock
+  question: how much raw material do we have in the warehouse?
+  category: multi_table
+  expect_any_of: [item_stocks, items]
+
+# --- deliberately ambiguous -----------------------------------------------
+# Retrieval will still return its best guesses; the ROUTER is what must decide
+# to ask a clarifying question. `expect_clarification` is asserted only when a
+# live LLM is configured (see tests/test_router_eval.py).
+
+- id: amb_numbers
+  question: show me the numbers
+  category: ambiguous
+  expect_clarification: true
+
+- id: amb_how_doing
+  question: how are we doing?
+  category: ambiguous
+  expect_clarification: true
+
+- id: amb_report
+  question: give me the report
+  category: ambiguous
+  expect_clarification: true
+
+- id: amb_status
+  question: status?
+  category: ambiguous
+  expect_clarification: true
+
+- id: amb_no_such_data
+  question: how many invoices are still unpaid?
+  category: ambiguous
+  expect_clarification: true
+  note: there is no invoices or payments table in this ERP
+
+- id: amb_profit
+  question: what is our profit margin this quarter?
+  category: ambiguous
+  expect_clarification: true
+  note: no general ledger or costing tables exist
