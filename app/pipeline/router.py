@@ -20,7 +20,12 @@ from typing import Literal
 
 from app.core.logging import get_logger
 from app.llm.base import LLMProvider, LLMResult
-from app.pipeline.prompts import ROUTER_SYSTEM, build_router_user_prompt
+from app.pipeline.prompts import (
+    REPAIR_SYSTEM,
+    ROUTER_SYSTEM,
+    build_repair_user_prompt,
+    build_router_user_prompt,
+)
 from app.retrieval.retriever import RetrievalResult
 
 log = get_logger(__name__)
@@ -81,6 +86,48 @@ def route(
             "router_input_tokens": result.input_tokens,
             "router_output_tokens": result.output_tokens,
             "router_latency_ms": result.latency_ms,
+        },
+    )
+    return decision
+
+
+def repair(
+    llm: LLMProvider,
+    message: str,
+    retrieval: RetrievalResult,
+    failed_sql: str,
+    error: str,
+    max_tokens: int = 700,
+) -> RouterDecision:
+    """One corrective pass after a query fails at the database.
+
+    Model-authored SQL fails in ways a prompt rule does not reliably prevent -
+    a reserved word used as an alias, an aggregate ordered by an ungrouped
+    column. Feeding the exact PostgreSQL error back fixes most of them, and it
+    generalises to errors nobody anticipated. Deliberately capped at one
+    attempt: a loop that keeps retrying burns tokens and latency on questions
+    that were never answerable.
+    """
+    user_prompt = build_repair_user_prompt(
+        message=message,
+        pruned_schema=retrieval.pruned_schema,
+        failed_sql=failed_sql,
+        error=error,
+    )
+    result = llm.complete(
+        system=REPAIR_SYSTEM, user=user_prompt, max_tokens=max_tokens, temperature=0.0
+    )
+    decision = _parse(result.text, retrieval)
+    decision.llm = result
+    decision.raw = result.text
+
+    log.info(
+        "sql repair attempted",
+        extra={
+            "repair_decision": decision.decision,
+            "original_error": error[:200],
+            "repair_input_tokens": result.input_tokens,
+            "repair_output_tokens": result.output_tokens,
         },
     )
     return decision

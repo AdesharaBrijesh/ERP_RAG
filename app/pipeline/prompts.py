@@ -47,8 +47,43 @@ DATABASE CONVENTIONS (this ERP, PostgreSQL) - follow these exactly:
      - "consumable"       -> et.code='ITEM_TYPE' AND ev.value_code='CONSUMABLE'
      - "active employee"  -> et.code='EMPLOYMENT_STATUS' AND ev.value_code='ACTIVE'
 
-3. `status` columns of type boolean on master tables mean active (true) /
-   inactive (false). They are NOT workflow states.
+3. `status` columns of type boolean on master tables mean the record is
+   enabled (true) / disabled (false). They are NOT workflow or lifecycle
+   states, and `employees.status` is NOT employment status.
+
+3a. EMPLOYMENT STATE lives in `employee_employment`, never on `employees`.
+   `employees` is identity only. Department, designation, joining date and
+   whether someone still works here are all in `employee_employment`, and
+   `employment_status_id` -> entity_values (et.code = 'EMPLOYMENT_STATUS').
+   "active employees" / "current staff" / "how many people work here" means:
+       FROM employee_employment ee
+       JOIN entity_values ev ON ev.id = ee.employment_status_id
+       JOIN entity_types et ON et.id = ev.entity_type_id
+                            AND et.code = 'EMPLOYMENT_STATUS'
+       WHERE ev.value_code = 'ACTIVE' AND ee.is_deleted = false
+   Counting `employees` instead returns everyone ever hired, including leavers.
+   Note `employee_employment.department_id` also points at entity_values, NOT
+   at the `departments` table.
+
+3c. MULTIPLE COMPANIES. This ERP holds more than one company, and most
+   transactional tables carry `company_id`. Unless the user names a company,
+   report the combined figure across all of them - "we" means the whole group.
+   Never pick one company implicitly.
+   In particular `pay_periods` has ONE ROW PER COMPANY PER MONTH. "the most
+   recent payroll" therefore means the latest (period_year, period_month)
+   across every company, NOT `max(id)` and NOT `ORDER BY end_date LIMIT 1` -
+   both silently return a single company's figure and halve the answer:
+       WHERE (pp.period_year, pp.period_month) = (
+           SELECT pp2.period_year, pp2.period_month FROM pay_periods pp2
+           WHERE pp2.is_deleted = false
+           ORDER BY pp2.period_year DESC, pp2.period_month DESC LIMIT 1)
+
+3b. REORDER LEVELS in `item_thresholds` are defined per ITEM, with no
+   warehouse dimension. To find items below their reorder level, compare the
+   threshold against stock SUMMED across all warehouses:
+       GROUP BY i.id, t.lower_limit HAVING SUM(s.current_qty) < t.lower_limit
+   Comparing a single `item_stocks` row against the limit flags items that are
+   only low in one warehouse while plenty remains elsewhere.
 
 4. Money and quantity columns are numeric. Round aggregates with ROUND(x, 2).
 
@@ -61,8 +96,27 @@ DATABASE CONVENTIONS (this ERP, PostgreSQL) - follow these exactly:
 7. Never write SELECT *. Name the columns you need, and alias them readably
    (e.g. `SUM(pr.net_pay) AS total_net_pay`) - those aliases are shown to the user.
 
+7a. Select HUMAN-READABLE labels, not internal codes. When a table has both a
+   `name` and a `code` column, select `name` ("Raw Material Store - Sanand"),
+   not `code` ("WH-RM-SAN"). The person reading the answer does not know the
+   code system. Select the code as well only if they asked for it.
+
 8. When listing rather than aggregating, ORDER BY something meaningful and
    add a sensible LIMIT (20 unless the user asked for more).
+
+9. TABLE ALIASES must never be a SQL reserved word. `is`, `as`, `in`, `on`,
+   `or`, `and`, `to`, `do`, `all`, `any`, `end`, `for`, `from`, `order`,
+   `group`, `select`, `where`, `case`, `left`, `full`, `union` are all
+   syntax errors as aliases. `FROM item_stocks is` will not parse.
+   Use a safe short alias instead: item_stocks -> ist, item_thresholds -> ith,
+   entity_values -> ev, entity_types -> et, sales_orders -> so.
+
+10. AGGREGATES. If the SELECT list contains an aggregate (SUM, COUNT, AVG),
+   then every non-aggregated column in SELECT *and in ORDER BY* must appear in
+   GROUP BY. `SELECT SUM(x) FROM t JOIN p ... ORDER BY p.date` is an error.
+   To pick the latest period first, filter it in a subquery:
+       WHERE pp.id = (SELECT max(id) FROM pay_periods)
+   rather than ordering an aggregate by an ungrouped column.
 """
 
 ROUTER_SYSTEM = f"""\
@@ -149,6 +203,49 @@ def build_router_user_prompt(
 
     sections.append(f"USER MESSAGE:\n{message}")
     return "\n\n".join(sections)
+
+
+REPAIR_SYSTEM = f"""\
+You are the ROUTING TASK of an ERP assistant, repairing a PostgreSQL query
+that failed to execute.
+
+You will be given the schema, the user's question, the query you wrote, and
+the exact error PostgreSQL returned. Fix the query.
+
+Common causes of the errors you will see here:
+- an alias that is a reserved word (`FROM item_stocks is`) - rename the alias
+- "must appear in the GROUP BY clause": an aggregate is combined with an
+  ungrouped column, often in ORDER BY. Either add the column to GROUP BY or
+  restructure so the aggregate stands alone (filter the row you want with a
+  subquery instead of ordering by it)
+- a column that does not exist - re-read the schema and use a real column
+
+{SCHEMA_CONVENTIONS}
+
+HARD RULES:
+- Output ONE JSON object and nothing else.
+- A single read-only SELECT. Never INSERT, UPDATE, DELETE, DROP or DDL.
+- If the question genuinely cannot be answered from these tables, say so with
+  a clarification instead of guessing again.
+
+{{"decision": "sql", "sql": "SELECT ...", "tables_used": ["a"]}}
+or
+{{"decision": "clarify", "clarifying_question": "...", "tables_used": []}}
+"""
+
+
+def build_repair_user_prompt(
+    message: str, pruned_schema: str, failed_sql: str, error: str
+) -> str:
+    return "\n\n".join(
+        [
+            f"RELEVANT TABLES:\n{pruned_schema}",
+            f"USER MESSAGE:\n{message}",
+            f"THE QUERY YOU WROTE:\n{failed_sql}",
+            f"POSTGRESQL ERROR:\n{error}",
+            "Return the corrected query.",
+        ]
+    )
 
 
 def build_formatter_user_prompt(

@@ -24,7 +24,7 @@ from app.db.guard import SqlGuardError, validate_sql
 from app.llm.base import LLMError, LLMProvider
 from app.llm.factory import get_llm
 from app.pipeline.formatter import format_answer
-from app.pipeline.router import route
+from app.pipeline.router import repair, route
 from app.retrieval.retriever import TableRetriever, get_retriever
 from app.session.base import SessionStore
 from app.session.factory import get_session_store
@@ -32,7 +32,14 @@ from app.session.factory import get_session_store
 log = get_logger(__name__)
 
 OutcomeType = Literal["answer", "clarification_needed", "error"]
-Path = Literal["direct_answer", "clarification", "guard_rejected", "sql_error", "llm_error"]
+Path = Literal[
+    "direct_answer",
+    "repaired_answer",
+    "clarification",
+    "guard_rejected",
+    "sql_error",
+    "llm_error",
+]
 
 
 @dataclass
@@ -229,6 +236,7 @@ class ChatPipeline:
                 path="guard_rejected",
             )
 
+        repaired = False
         try:
             result: QueryResult = execute_query(guarded)
         except SqlExecutionError as exc:
@@ -236,15 +244,19 @@ class ChatPipeline:
                 "sql execution failed",
                 extra={"db_error": str(exc), "failed_sql": guarded.sql[:500]},
             )
-            return ChatOutcome(
+            outcome = self._attempt_repair(
                 session_id=session_id,
-                type="error",
-                message=_SQL_ERROR_MESSAGE,
-                sql_generated=guarded.sql,
-                tables_used=decision.tables_used,
+                message=message,
+                retrieval=retrieval,
+                failed_sql=guarded.sql,
+                error=str(exc),
+                decision=decision,
                 tokens=tokens,
-                path="sql_error",
             )
+            if isinstance(outcome, ChatOutcome):
+                return outcome
+            guarded, result = outcome
+            repaired = True
 
         answer = format_answer(
             llm=self.llm, message=message, result=result, history_block=history_block
@@ -261,10 +273,73 @@ class ChatPipeline:
             sql_generated=guarded.sql,
             tables_used=decision.tables_used,
             tokens=tokens,
-            path="direct_answer",
+            path="repaired_answer" if repaired else "direct_answer",
             row_count=result.row_count,
             sql_ms=result.duration_ms,
         )
+
+    def _attempt_repair(
+        self,
+        session_id: str,
+        message: str,
+        retrieval,
+        failed_sql: str,
+        error: str,
+        decision,
+        tokens: TokenUsage,
+    ) -> "ChatOutcome | tuple[object, QueryResult]":
+        """One corrective LLM pass. Returns the retry's (guarded, result) on
+        success, or a terminal ChatOutcome if the repair also fails."""
+        failure = ChatOutcome(
+            session_id=session_id,
+            type="error",
+            message=_SQL_ERROR_MESSAGE,
+            sql_generated=failed_sql,
+            tables_used=decision.tables_used,
+            tokens=tokens,
+            path="sql_error",
+        )
+
+        try:
+            fixed = repair(
+                llm=self.llm,
+                message=message,
+                retrieval=retrieval,
+                failed_sql=failed_sql,
+                error=error,
+            )
+        except LLMError as exc:
+            log.error("repair llm call failed", extra={"error": str(exc)})
+            return failure
+
+        if fixed.llm:
+            tokens.add(fixed.llm.input_tokens, fixed.llm.output_tokens, fixed.llm.cost_inr)
+
+        if not fixed.is_sql:
+            # The model decided on reflection that it cannot answer this.
+            question = fixed.clarifying_question or ""
+            self.sessions.set_pending_clarification(session_id, question, message)
+            return ChatOutcome(
+                session_id=session_id,
+                type="clarification_needed",
+                message=question,
+                tables_used=fixed.tables_used,
+                tokens=tokens,
+                path="clarification",
+            )
+
+        try:
+            guarded_retry = validate_sql(fixed.sql or "")
+            result = execute_query(guarded_retry)
+        except SqlGuardError as exc:
+            log.warning("repaired SQL rejected by guard", extra={"guard_reason": exc.reason})
+            return failure
+        except SqlExecutionError as exc:
+            log.warning("repaired sql also failed", extra={"db_error": str(exc)})
+            return failure
+
+        log.info("sql repair succeeded", extra={"row_count": result.row_count})
+        return guarded_retry, result
 
 
 _pipeline: ChatPipeline | None = None

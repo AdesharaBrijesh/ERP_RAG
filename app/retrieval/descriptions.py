@@ -256,9 +256,12 @@ TABLE_GLOSSARY: dict[str, tuple[str, tuple[str, ...]]] = {
     ),
     "employee_employment": (
         "Employment details per employee: joining date, department, designation, "
-        "employment type and current employment status.",
+        "employment type and current employment status (active, resigned, on notice). "
+        "Whether someone still works here is determined here, not in the employees table.",
         ("joining date", "designation", "employment status", "confirmation", "job details",
-         "who reports to", "employment type", "grade"),
+         "who reports to", "employment type", "grade", "active employees", "current staff",
+         "still working", "resigned", "left the company", "headcount", "on notice",
+         "employees by department", "staff by department", "attrition"),
     ),
     "employee_addresses": (
         "Home and permanent addresses of employees.",

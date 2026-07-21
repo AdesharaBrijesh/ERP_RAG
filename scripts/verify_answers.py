@@ -88,7 +88,17 @@ def check(case: dict, outcome, show_sql: bool) -> tuple[bool, list[str]]:
             problems.append(
                 f"reference SQL drifted: expected {expected}, database says {actual}"
             )
-        if not any(_close(n, expected) for n in answer_numbers):
+        if case.get("expect_no_rows"):
+            # "There are no items below their reorder level" is a correct
+            # answer that never says "0". What matters is that it did not
+            # invent rows, so check for fabricated figures instead.
+            if outcome.row_count != 0:
+                problems.append(f"expected no rows, query returned {outcome.row_count}")
+            if case.get("must_not_contain_digits") and answer_numbers:
+                problems.append(
+                    f"answer states figures for an empty result: {answer_numbers[:6]}"
+                )
+        elif not any(_close(n, expected) for n in answer_numbers):
             problems.append(
                 f"answer does not state {expected} (found {answer_numbers[:6]})"
             )

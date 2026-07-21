@@ -87,8 +87,16 @@
     SELECT ROUND(SUM(pr.net_pay), 2) AS total_net_pay
     FROM payroll_runs pr JOIN pay_periods pp ON pp.id = pr.pay_period_id
     WHERE pr.is_deleted = false
-      AND pp.id = (SELECT max(id) FROM pay_periods)
+      AND (pp.period_year, pp.period_month) = (
+        SELECT pp2.period_year, pp2.period_month FROM pay_periods pp2
+        WHERE pp2.is_deleted = false
+        ORDER BY pp2.period_year DESC, pp2.period_month DESC LIMIT 1)
   expect: 15910156.12
+  note: >
+    This database holds two companies and pay_periods has one row per company
+    per month. max(id) or ORDER BY end_date LIMIT 1 returns one company's
+    figure (7.93M or 7.98M) and halves the answer. The group-wide total for
+    July 2026 is 15,910,156.12 across 451 employees.
 
 - id: gt_items_below_reorder
   question: which items are below their reorder level?
@@ -101,9 +109,13 @@
       GROUP BY i.id, t.lower_limit HAVING SUM(s.current_qty) < t.lower_limit
     ) x
   expect: 0
+  expect_no_rows: true
+  must_not_contain_digits: true
   note: >
     Genuinely zero. The answer must say nothing is below reorder level, not
-    invent items. This is the anti-hallucination case.
+    invent items. This is the anti-hallucination case, and "there are no items
+    below their reorder level" is a correct answer that never states the
+    number 0 - so it is checked for the absence of invented rows instead.
 
 # --- must route to a clarifying question, not a guess -------------------
 
