@@ -27,6 +27,20 @@ DEFAULT_EXCLUDED_TABLES = frozenset(
 # returns rows and one that silently returns none.
 _ENUMISH_SUFFIXES = ("status", "type", "state", "stage", "category", "mode", "kind")
 
+# Present on essentially every table in this ERP. Collapsed to one line in the
+# prompt; the soft-delete convention is stated once globally instead.
+AUDIT_COLUMNS = frozenset(
+    {
+        "created_at",
+        "created_by",
+        "updated_at",
+        "updated_by",
+        "deleted_at",
+        "deleted_by",
+        "is_deleted",
+    }
+)
+
 
 @dataclass(frozen=True)
 class ColumnInfo:
@@ -77,15 +91,25 @@ class TableInfo:
 
     def to_ddl(self, max_columns: int = 40) -> str:
         """Compact DDL for the LLM prompt. Not valid DDL - it is a token-cheap
-        description that the model reads far more reliably than real DDL."""
+        description that the model reads far more reliably than real DDL.
+
+        Audit columns are collapsed into a single line: every table in this ERP
+        carries the same seven, and spelling them out per table was costing
+        ~40% of the pruned-schema budget for zero added signal.
+        """
         header = f"TABLE {self.name}"
         if self.comment:
             header += f"  -- {self.comment}"
         lines = [header]
-        cols = self.columns[:max_columns]
-        lines.extend(c.to_ddl_line() for c in cols)
-        if len(self.columns) > max_columns:
-            lines.append(f"  ... {len(self.columns) - max_columns} more columns")
+
+        business_cols = [c for c in self.columns if c.name not in AUDIT_COLUMNS]
+        present_audit = [c.name for c in self.columns if c.name in AUDIT_COLUMNS]
+
+        lines.extend(c.to_ddl_line() for c in business_cols[:max_columns])
+        if len(business_cols) > max_columns:
+            lines.append(f"  ... {len(business_cols) - max_columns} more columns")
+        if present_audit:
+            lines.append(f"  [audit cols: {', '.join(present_audit)}]")
         return "\n".join(lines)
 
 

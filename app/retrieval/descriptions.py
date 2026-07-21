@@ -33,7 +33,11 @@ TABLE_GLOSSARY: dict[str, tuple[str, tuple[str, ...]]] = {
         "Current on-hand stock quantity of each item in each warehouse. "
         "This is the live inventory balance table.",
         ("stock", "inventory", "warehouse", "on hand", "quantity available", "stock level",
-         "how much stock", "stock position", "godown", "store", "balance", "availability"),
+         "how much stock", "stock position", "godown", "store", "balance", "availability",
+         "running low", "low stock", "out of stock", "shortage", "how much do we have",
+         "remaining quantity", "current stock", "stock looking",
+         "raw material stock", "raw material in warehouse", "finished goods stock",
+         "material in warehouse", "how much material"),
     ),
     "stock_ledger": (
         "Immutable movement history of stock: every receipt, issue, transfer, "
@@ -166,7 +170,7 @@ TABLE_GLOSSARY: dict[str, tuple[str, tuple[str, ...]]] = {
     "bom_components": (
         "Component lines of a bill of materials: which input item and how much "
         "is needed per unit of output.",
-        ("bom line", "components", "ingredients", "input materials", "raw material needed"),
+        ("bom line", "components", "ingredients", "input materials", "material needed per unit"),
     ),
     "production_plan": (
         "Production planning headers: what is planned to be manufactured and when.",
@@ -184,7 +188,7 @@ TABLE_GLOSSARY: dict[str, tuple[str, tuple[str, ...]]] = {
     ),
     "production_batch_inputs": (
         "Materials consumed by each production batch.",
-        ("material consumed", "batch input", "consumption", "raw material used", "issued to production"),
+        ("material consumed", "batch input", "consumption", "consumed in batch", "issued to production"),
     ),
     "production_batch_outputs": (
         "Finished quantity produced by each production batch.",
@@ -246,7 +250,9 @@ TABLE_GLOSSARY: dict[str, tuple[str, tuple[str, ...]]] = {
     # --- HR / people ------------------------------------------------------
     "employees": (
         "Employee master: every person employed, with personal details and codes.",
-        ("employee", "staff", "worker", "people", "headcount", "personnel", "team", "manpower", "workforce"),
+        ("employee", "staff", "worker", "people", "headcount", "personnel", "team",
+         "manpower", "workforce", "how many people", "work here", "employed", "hires",
+         "who works", "our team", "staff strength"),
     ),
     "employee_employment": (
         "Employment details per employee: joining date, department, designation, "
@@ -487,11 +493,33 @@ def description_checksum(table: TableInfo, description: str) -> str:
 
 _WORD_RE = re.compile(r"[a-z0-9]+")
 
+# A term appearing in a table's name or curated synonyms is a deliberate
+# signal. The same term appearing incidentally in a column name or prose is
+# weak evidence - `threshold_alert_logs` has a `current_stock` column, but a
+# user asking about "stock" means `item_stocks`. Weighting these differently
+# is what stops incidental matches from outranking the real table.
+PRIMARY_WEIGHT = 1.0
+SECONDARY_WEIGHT = 0.35
+
 
 def keywords_for(table: TableInfo) -> set[str]:
-    """Lexical index terms for the keyword half of hybrid retrieval."""
-    purpose, synonyms = TABLE_GLOSSARY.get(table.name, ("", _token_synonyms(table.name)))
-    blob = " ".join(
-        [table.name.replace("_", " "), purpose, " ".join(synonyms), " ".join(key_columns(table))]
-    ).lower()
-    return set(_WORD_RE.findall(blob))
+    """Flat term set - used for the stored keyword blob and for diagnostics."""
+    return set(weighted_keywords_for(table))
+
+
+def weighted_keywords_for(table: TableInfo) -> dict[str, float]:
+    """Lexical index terms with weights, for the keyword half of hybrid retrieval."""
+    purpose, synonyms = TABLE_GLOSSARY.get(table.name, (None, ()))
+    if purpose is None:
+        purpose = table.comment or ""
+        synonyms = _token_synonyms(table.name)
+
+    primary_blob = " ".join([table.name.replace("_", " "), " ".join(synonyms)]).lower()
+    secondary_blob = " ".join([purpose, " ".join(key_columns(table))]).lower()
+
+    weights: dict[str, float] = {}
+    for term in _WORD_RE.findall(secondary_blob):
+        weights[term] = SECONDARY_WEIGHT
+    for term in _WORD_RE.findall(primary_blob):
+        weights[term] = PRIMARY_WEIGHT
+    return weights
