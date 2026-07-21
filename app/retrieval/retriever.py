@@ -11,7 +11,7 @@ Three signals, combined:
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sqlalchemy import Engine
 
@@ -46,6 +46,9 @@ class RetrievalResult:
     pruned_schema: str
     duration_ms: int
     top_score: float
+    # The introspected schema for the selected tables. The router uses this to
+    # include only the domain conventions these tables can actually need.
+    table_infos: list[TableInfo] = field(default_factory=list)
 
     @property
     def table_names(self) -> list[str]:
@@ -145,6 +148,9 @@ class TableRetriever:
             pruned_schema=pruned,
             duration_ms=int((time.perf_counter() - started) * 1000),
             top_score=selected[0].score if selected else 0.0,
+            table_infos=[
+                self._schema[t.name] for t in selected if t.name in self._schema
+            ],
         )
 
     def _expand_via_foreign_keys(

@@ -51,13 +51,20 @@ class ColumnInfo:
     references: str | None = None  # "table.column"
     comment: str | None = None
     sample_values: tuple[str, ...] = ()
+    # For columns pointing at entity_values: the entity_types.code actually
+    # used by this column, discovered from the data at indexing time. Turns
+    # "pick one of 40 lookup codes" into a stated fact.
+    lookup_code: str | None = None
 
     def to_ddl_line(self) -> str:
         bits = [f"  {self.name} {self.data_type}"]
         if self.is_primary_key:
             bits.append("PK")
         if self.references:
-            bits.append(f"-> {self.references}")
+            target = self.references
+            if self.lookup_code:
+                target += f" [{self.lookup_code}]"
+            bits.append(f"-> {target}")
         if not self.nullable:
             bits.append("NOT NULL")
         line = " ".join(bits)
@@ -110,7 +117,24 @@ class TableInfo:
             lines.append(f"  ... {len(business_cols) - max_columns} more columns")
         if present_audit:
             lines.append(f"  [audit cols: {', '.join(present_audit)}]")
+        lines.append(f"  {self.soft_delete_hint()}")
         return "\n".join(lines)
+
+    def soft_delete_hint(self) -> str:
+        """State the soft-delete filter for THIS table explicitly.
+
+        The convention is not uniform in this ERP: five tables have no
+        `is_deleted` at all, and two type it as smallint rather than boolean.
+        Both variants raise a Postgres error against the usual
+        `is_deleted = false`, so the correct filter is spelled out per table
+        instead of left to the model to remember.
+        """
+        column = next((c for c in self.columns if c.name == "is_deleted"), None)
+        if column is None:
+            return "!! no is_deleted column - do NOT add a soft-delete filter here"
+        if column.data_type in ("smallint", "integer", "bigint"):
+            return f"!! soft delete: use `{self.name}.is_deleted = 0` (smallint, NOT false)"
+        return f"!! soft delete: use `{self.name}.is_deleted = false`"
 
 
 _COLUMNS_SQL = """
@@ -221,7 +245,49 @@ def introspect_schema(
         ordered = [tables[name] for name in sorted(tables)]
         if sample_enum_values:
             _attach_enum_samples(conn, schema, ordered)
+            _attach_lookup_codes(conn, schema, ordered)
     return ordered
+
+
+def _attach_lookup_codes(conn, schema: str, tables: list[TableInfo]) -> None:
+    """Resolve which entity_types.code each entity_values FK column uses.
+
+    Dozens of columns across this ERP point at the single `entity_values`
+    table, and which lookup group a given column belongs to is knowable only
+    from the data. Without this the model has to guess from a list of 40 codes;
+    with it, `item_type_id -> entity_values.id [ITEM_TYPE]` is stated outright.
+    Indexing-time only.
+    """
+    for table in tables:
+        if table.row_estimate == 0:
+            continue
+        for idx, col in enumerate(table.columns):
+            if col.references != "entity_values.id":
+                continue
+            try:
+                codes = conn.execute(
+                    text(
+                        f"""
+                        SELECT DISTINCT et.code
+                        FROM (
+                            SELECT "{col.name}" AS ref
+                            FROM "{schema}"."{table.name}"
+                            WHERE "{col.name}" IS NOT NULL
+                            LIMIT 500
+                        ) sample
+                        JOIN entity_values ev ON ev.id = sample.ref
+                        JOIN entity_types et ON et.id = ev.entity_type_id
+                        LIMIT 3
+                        """
+                    )
+                ).scalars().all()
+            except Exception:  # noqa: BLE001 - best-effort enrichment
+                continue
+            # Only useful when the column maps to exactly one lookup group.
+            if len(codes) == 1:
+                table.columns[idx] = ColumnInfo(
+                    **{**col.__dict__, "lookup_code": codes[0]}
+                )
 
 
 def _attach_enum_samples(conn, schema: str, tables: list[TableInfo]) -> None:

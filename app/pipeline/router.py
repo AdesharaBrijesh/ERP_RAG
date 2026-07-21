@@ -22,8 +22,8 @@ from app.core.logging import get_logger
 from app.llm.base import LLMProvider, LLMResult
 from app.pipeline.prompts import (
     REPAIR_SYSTEM,
-    ROUTER_SYSTEM,
     build_repair_user_prompt,
+    build_router_system,
     build_router_user_prompt,
 )
 from app.retrieval.retriever import RetrievalResult
@@ -71,7 +71,10 @@ def route(
         pending_clarification=pending_clarification,
     )
     result = llm.complete(
-        system=ROUTER_SYSTEM, user=user_prompt, max_tokens=max_tokens, temperature=0.0
+        system=build_router_system(retrieval.table_infos),
+        user=user_prompt,
+        max_tokens=max_tokens,
+        temperature=0.0,
     )
     decision = _parse(result.text, retrieval)
     decision.llm = result

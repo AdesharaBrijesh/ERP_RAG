@@ -25,101 +25,136 @@ ENTITY_TYPE_CODES = (
     "WAGE_PERIOD_STATUS, WORKER_CATEGORY, CALCULATION_TYPE, COMPONENT_TYPE"
 )
 
-SCHEMA_CONVENTIONS = f"""\
-DATABASE CONVENTIONS (this ERP, PostgreSQL) - follow these exactly:
+# --- Conventions -----------------------------------------------------------
+#
+# These are the domain rules that cannot be inferred from DDL, and getting one
+# wrong is the difference between the right number and a plausible wrong one.
+#
+# They are assembled PER QUERY from the tables retrieval actually selected.
+# Shipping all of them on every request cost ~1,560 tokens - more than twice
+# the pruned schema they exist to complement - which quietly undid the point of
+# pruning the schema in the first place. A question about stock has no use for
+# the payroll-period rule.
 
-1. SOFT DELETES. Most tables have an `is_deleted` boolean. ALWAYS add
-   `AND <alias>.is_deleted = false` for every table you touch that has it.
-   Rows with is_deleted = true are deleted as far as the business is concerned.
+CORE_CONVENTIONS = """DATABASE CONVENTIONS (this ERP, PostgreSQL) - follow these exactly:
 
-2. LOOKUP VALUES. Columns ending in `_type_id`, `_status_id`, `uom_id`,
-   `gender_id`, `_category_id` almost always reference `entity_values.id`,
-   NOT a dedicated table. To filter or display a human-readable value:
-       JOIN entity_values ev ON ev.id = t.<something>_id
-       JOIN entity_types et ON et.id = ev.entity_type_id AND et.code = '<CODE>'
-   Use `ev.value_name` to display and `ev.value_code` to filter.
-   Available et.code values: {ENTITY_TYPE_CODES}.
+1. SOFT DELETES are not uniform here. Every table below carries a `!!` line
+   telling you exactly what to write for that table. Follow it literally:
+     `!! soft delete: use x.is_deleted = false`  -> boolean, the common case
+     `!! soft delete: use x.is_deleted = 0`      -> smallint; `= false` is a
+        type error ("operator does not exist: smallint = boolean")
+     `!! no is_deleted column`                   -> add NO filter; referencing
+        it errors with "column is_deleted does not exist"
 
-   Common mappings:
-     - "raw material"     -> et.code='ITEM_TYPE' AND ev.value_code='RAW'
-     - "finished goods"   -> et.code='ITEM_TYPE' AND ev.value_code='FINISHED'
-     - "semi-finished"    -> et.code='ITEM_TYPE' AND ev.value_code='SEMI_FINISHED'
-     - "consumable"       -> et.code='ITEM_TYPE' AND ev.value_code='CONSUMABLE'
-     - "active employee"  -> et.code='EMPLOYMENT_STATUS' AND ev.value_code='ACTIVE'
+2. Never write SELECT *. Name the columns, and alias them readably
+   (`SUM(pr.net_pay) AS total_net_pay`) - aliases are shown to the user.
 
-3. `status` columns of type boolean on master tables mean the record is
-   enabled (true) / disabled (false). They are NOT workflow or lifecycle
-   states, and `employees.status` is NOT employment status.
+3. Prefer human-readable labels over internal codes: select a `name` column
+   ("Raw Material Store - Sanand") rather than a `code` ("WH-RM-SAN").
 
-3a. EMPLOYMENT STATE lives in `employee_employment`, never on `employees`.
-   `employees` is identity only. Department, designation, joining date and
-   whether someone still works here are all in `employee_employment`, and
-   `employment_status_id` -> entity_values (et.code = 'EMPLOYMENT_STATUS').
-   "active employees" / "current staff" / "how many people work here" means:
-       FROM employee_employment ee
-       JOIN entity_values ev ON ev.id = ee.employment_status_id
-       JOIN entity_types et ON et.id = ev.entity_type_id
-                            AND et.code = 'EMPLOYMENT_STATUS'
-       WHERE ev.value_code = 'ACTIVE' AND ee.is_deleted = false
-   Counting `employees` instead returns everyone ever hired, including leavers.
-   Note `employee_employment.department_id` also points at entity_values, NOT
-   at the `departments` table.
+4. Table aliases must NEVER be a SQL reserved word. `is`, `as`, `in`, `on`,
+   `or`, `and`, `order`, `group`, `end`, `all` are syntax errors as aliases -
+   `FROM item_stocks is` will not parse. Use `ist`, `ev`, `so` and similar.
 
-3c. MULTIPLE COMPANIES. This ERP holds more than one company, and most
-   transactional tables carry `company_id`. Unless the user names a company,
-   report the combined figure across all of them - "we" means the whole group.
-   Never pick one company implicitly.
-   In particular `pay_periods` has ONE ROW PER COMPANY PER MONTH. "the most
-   recent payroll" therefore means the latest (period_year, period_month)
-   across every company, NOT `max(id)` and NOT `ORDER BY end_date LIMIT 1` -
-   both silently return a single company's figure and halve the answer:
-       WHERE (pp.period_year, pp.period_month) = (
-           SELECT pp2.period_year, pp2.period_month FROM pay_periods pp2
-           WHERE pp2.is_deleted = false
-           ORDER BY pp2.period_year DESC, pp2.period_month DESC LIMIT 1)
+5. AGGREGATES: with SUM/COUNT/AVG in the SELECT list, every non-aggregated
+   column in SELECT *and in ORDER BY* must be in GROUP BY. To pick a latest
+   row, filter it with a subquery rather than ORDER BY on an ungrouped column.
 
-3b. REORDER LEVELS in `item_thresholds` are defined per ITEM, with no
-   warehouse dimension. To find items below their reorder level, compare the
-   threshold against stock SUMMED across all warehouses:
-       GROUP BY i.id, t.lower_limit HAVING SUM(s.current_qty) < t.lower_limit
-   Comparing a single `item_stocks` row against the limit flags items that are
-   only low in one warehouse while plenty remains elsewhere.
+6. `status` booleans on master tables mean enabled/disabled, NOT workflow or
+   employment state. Money and quantities are numeric - ROUND(x, 2).
+   Match text case-insensitively with ILIKE. Dates use CURRENT_DATE and
+   INTERVAL; "last month" is the previous calendar month.
 
-4. Money and quantity columns are numeric. Round aggregates with ROUND(x, 2).
+7. When listing rather than aggregating, ORDER BY something meaningful and
+   LIMIT 20 unless the user asked for more.
 
-5. Text matching must be case-insensitive: use ILIKE with % wildcards.
-
-6. Dates: use CURRENT_DATE and INTERVAL, e.g.
-   `WHERE created_at >= CURRENT_DATE - INTERVAL '30 days'`.
-   "last month" means the previous calendar month unless the user says otherwise.
-
-7. Never write SELECT *. Name the columns you need, and alias them readably
-   (e.g. `SUM(pr.net_pay) AS total_net_pay`) - those aliases are shown to the user.
-
-7a. Select HUMAN-READABLE labels, not internal codes. When a table has both a
-   `name` and a `code` column, select `name` ("Raw Material Store - Sanand"),
-   not `code` ("WH-RM-SAN"). The person reading the answer does not know the
-   code system. Select the code as well only if they asked for it.
-
-8. When listing rather than aggregating, ORDER BY something meaningful and
-   add a sensible LIMIT (20 unless the user asked for more).
-
-9. TABLE ALIASES must never be a SQL reserved word. `is`, `as`, `in`, `on`,
-   `or`, `and`, `to`, `do`, `all`, `any`, `end`, `for`, `from`, `order`,
-   `group`, `select`, `where`, `case`, `left`, `full`, `union` are all
-   syntax errors as aliases. `FROM item_stocks is` will not parse.
-   Use a safe short alias instead: item_stocks -> ist, item_thresholds -> ith,
-   entity_values -> ev, entity_types -> et, sales_orders -> so.
-
-10. AGGREGATES. If the SELECT list contains an aggregate (SUM, COUNT, AVG),
-   then every non-aggregated column in SELECT *and in ORDER BY* must appear in
-   GROUP BY. `SELECT SUM(x) FROM t JOIN p ... ORDER BY p.date` is an error.
-   To pick the latest period first, filter it in a subquery:
-       WHERE pp.id = (SELECT max(id) FROM pay_periods)
-   rather than ordering an aggregate by an ungrouped column.
+8. This ERP holds MORE THAN ONE COMPANY. Unless the user names one, report the
+   combined figure across all of them - never pick a single company implicitly.
 """
 
-ROUTER_SYSTEM = f"""\
+LOOKUP_CONVENTION = """LOOKUP VALUES. Columns like `_type_id`, `_status_id`, `uom_id` reference
+`entity_values.id`, NOT a dedicated table. The schema states each one's lookup
+group in brackets, e.g. `item_type_id -> entity_values.id [ITEM_TYPE]`. Use
+that code - do not guess it:
+    JOIN entity_values ev ON ev.id = t.item_type_id
+    JOIN entity_types et ON et.id = ev.entity_type_id AND et.code = 'ITEM_TYPE'
+Display `ev.value_name`, filter on `ev.value_code`.
+Value codes: "raw material" -> 'RAW', "finished goods" -> 'FINISHED',
+"semi-finished" -> 'SEMI_FINISHED', "consumable" -> 'CONSUMABLE',
+"active employee" -> 'ACTIVE'.
+"""
+
+EMPLOYMENT_CONVENTION = """EMPLOYMENT STATE lives in `employee_employment`, never on `employees`, which is
+identity only. Department, designation, joining date and whether someone still
+works here are all in `employee_employment`, and `employment_status_id` points
+at entity_values (et.code = 'EMPLOYMENT_STATUS').
+"active employees" / "current staff" / "how many people work here" means:
+    FROM employee_employment ee
+    JOIN entity_values ev ON ev.id = ee.employment_status_id
+    JOIN entity_types et ON et.id = ev.entity_type_id
+                         AND et.code = 'EMPLOYMENT_STATUS'
+    WHERE ev.value_code = 'ACTIVE' AND ee.is_deleted = false
+Counting `employees` instead returns everyone ever hired, including leavers.
+Note `employee_employment.department_id` also points at entity_values, NOT at
+the `departments` table.
+"""
+
+THRESHOLD_CONVENTION = """REORDER LEVELS in `item_thresholds` are per ITEM, with no warehouse dimension.
+Compare the threshold against stock SUMMED across all warehouses:
+    GROUP BY i.id, t.lower_limit HAVING SUM(s.current_qty) < t.lower_limit
+Comparing a single `item_stocks` row against the limit wrongly flags items that
+are merely low in one warehouse while plenty remains elsewhere.
+"""
+
+PAY_PERIOD_CONVENTION = """PAY PERIODS have ONE ROW PER COMPANY PER MONTH. "the most recent payroll" means
+the latest (period_year, period_month) across every company - NOT `max(id)` and
+NOT `ORDER BY end_date LIMIT 1`, both of which silently return one company's
+figure and halve the answer:
+    WHERE (pp.period_year, pp.period_month) = (
+        SELECT pp2.period_year, pp2.period_month FROM pay_periods pp2
+        WHERE pp2.is_deleted = false
+        ORDER BY pp2.period_year DESC, pp2.period_month DESC LIMIT 1)
+"""
+
+_EMPLOYMENT_TRIGGERS = frozenset(
+    {"employees", "employee_employment", "attendance_records", "leave_entries",
+     "employee_salary_details", "payroll_runs", "designations", "departments"}
+)
+_PAY_PERIOD_TRIGGERS = frozenset({"pay_periods", "payroll_runs", "worker_wage_periods"})
+
+
+def build_conventions(tables: list) -> str:
+    """Assemble only the conventions the retrieved tables can actually need."""
+    names = {t.name for t in tables}
+    blocks = [CORE_CONVENTIONS]
+
+    # Lookup guidance is worth its tokens only if something here points at
+    # entity_values - detected from the real FKs, not a hardcoded list.
+    needs_lookup = "entity_values" in names or any(
+        ref.split(".")[0] == "entity_values"
+        for table in tables
+        for _, ref in getattr(table, "foreign_keys", [])
+    )
+    if needs_lookup:
+        blocks.append(LOOKUP_CONVENTION)
+    if names & _EMPLOYMENT_TRIGGERS:
+        blocks.append(EMPLOYMENT_CONVENTION)
+    if "item_thresholds" in names:
+        blocks.append(THRESHOLD_CONVENTION)
+    if names & _PAY_PERIOD_TRIGGERS:
+        blocks.append(PAY_PERIOD_CONVENTION)
+
+    return "\n".join(blocks)
+
+
+# Kept for the repair prompt and for tests that assert on the full rule set.
+SCHEMA_CONVENTIONS = "\n".join(
+    [CORE_CONVENTIONS, LOOKUP_CONVENTION, EMPLOYMENT_CONVENTION,
+     THRESHOLD_CONVENTION, PAY_PERIOD_CONVENTION]
+)
+
+
+_ROUTER_TEMPLATE = """\
 You are the ROUTING TASK of an ERP assistant. You decide, for one user
 message, whether the available tables can answer it, and if so you write the
 PostgreSQL query.
@@ -143,7 +178,7 @@ things; a required filter is missing and guessing would mislead; or the data
 simply is not in these tables. Do NOT choose "clarify" merely because the
 query is hard to write.
 
-{SCHEMA_CONVENTIONS}
+{conventions}
 
 HARD RULES:
 - Output ONE JSON object and nothing else. No markdown fence, no commentary.
@@ -154,10 +189,20 @@ HARD RULES:
   Do not invent a table because it "should" exist.
 
 Respond in exactly this shape:
-{{"decision": "sql", "sql": "SELECT ...", "tables_used": ["a", "b"]}}
+{"decision": "sql", "sql": "SELECT ...", "tables_used": ["a", "b"]}
 or
-{{"decision": "clarify", "clarifying_question": "...", "tables_used": []}}
+{"decision": "clarify", "clarifying_question": "...", "tables_used": []}
 """
+
+
+def build_router_system(tables: list) -> str:
+    """Router system prompt carrying only the conventions this query needs."""
+    return _ROUTER_TEMPLATE.replace("{conventions}", build_conventions(tables))
+
+
+# Static full-rule version, used by the repair prompt and by the fake
+# provider, which keys off the "ROUTING TASK" marker.
+ROUTER_SYSTEM = _ROUTER_TEMPLATE.replace("{conventions}", SCHEMA_CONVENTIONS)
 
 FORMATTER_SYSTEM = """\
 You turn a database result into a short, friendly answer for a non-technical
